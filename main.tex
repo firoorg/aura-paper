@@ -1,0 +1,599 @@
+\documentclass{article}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath,amssymb,amsthm,amsfonts}
+\usepackage{hyperref}
+\usepackage{authblk}
+
+\newcommand{\G}{\mathbb{G}}
+\newcommand{\F}{\mathbb{F}}
+\newcommand{\func}[1]{\mathsf{#1}}
+
+\title{Aura: private voting with reduced trust on tallying authorities}
+\author[1,2]{Aram Jivanyan\thanks{Corresponding author: \texttt{aram@firo.org}}}
+\author[3]{Aaron Feickert}
+\affil[1]{Firo}
+\affil[2]{Yerevan State University}
+\affil[3]{Cypher Stack}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+	Electronic voting has long been an area of active and challenging research.
+	Security properties relevant to physical voting in elections with a variety of threat models and priorities are often difficult to reproduce in cryptographic systems and protocols.
+	Existing work in this space often focuses on the privacy of ballot contents, assurances to voters that their votes are tabulated, and verification that election results are correct; however, privacy of voter identity is often offloaded to trust requirements on election organizers or tallying authorities, or implies other kinds of trust related to cryptographic construction instantiation.
+	Here we introduce Aura, an election protocol that reduces trust on tallying authorities and organizers while ensuring voter privacy.
+	Ballots in Aura are dissociated from voter identity cryptographically, use verifiable encryption and threshold decryption to diffuse trust in tallying authorities, require no trusted setup for cryptographic primitives, and use efficient proving systems to reduce computation and communication complexity.
+	These properties make Aura a competitive candidate for use in a variety of applications where trust minimization is desirable or necessary.
+\end{abstract}
+
+
+\section{Introduction}
+
+Electronic voting poses unique and systemic challenges in research, development, implementation, and deployment.
+Unfortunately, most device-based voting machine methods currently in common use are commercial products developed without public expert input, broad auditing, documented protocols, or track records of security that hold up to close examination.
+
+Accountable online voting, where a so-called ``bulletin board'' of public ballots is employed for transparency and auditability, has inherently different trust and security requirements than closed machine-based techniques; in this case, ballot and election properties and tabulation methods must be secured cryptographically in order to achieve the required goals of a particular application.
+
+Requirements, risks, and threat models in elections are complex.
+Voter anonymity is often required and reasonably guaranteed in physical elections, where ballots contain no identifying information about the voter at the time of tallying.
+Avoidance of voter coercion and bribery may also be important in major elections; a voter entering a voting booth privately where photography is prohibited can prevent this in practice, but circumstances may differ significantly in the online case where ballots are publicly visible for audit purposes and a voter may cast its ballot from the device of its choosing.
+
+
+\subsection{Requirements}
+
+Properties and requirements on voting protocols have long been the subject of interesting and evolving research, but as yet there does not appear to be a universal set of guidelines by which to analyze such constructions.
+Since many properties and threat models of physical elections are challenging to precisely map to the digital realm, it is similarly challenging to precisely specify requirements that meet all use cases that could arise.
+
+Informally, we require the following properties:
+\begin{itemize}
+    \item \textbf{Public parameters}: We require that all cryptographic constructions be instantiated with only public verificable parameters, with no trusted parties required for setup (aside from election-specific trust requirements like voter registration).
+    \item \textbf{Correctness}: A voter authorized for an election can cast a ballot that is included in the election result.
+    \item \textbf{Universal verifiability}: Any observer can verify that all valid ballots are included in the final result, and that the result correctly represents only those ballots.
+    \item \textbf{Vote privacy}: It is not possible for an observer to determine the vote associated with a valid ballot.
+    \item \textbf{Voter anonymity}: It is not possible for an observer to determine the voter associated with a valid ballot, or if a particular voter voted at all.
+    \item \textbf{Ballot soundness}: It is not possible for a voter to cast a ballot included in the election result if:
+    \begin{itemize}
+        \item The voter is not authorized to vote in the election.
+        \item The voter has already cast a valid ballot.
+        \item The vote included in the ballot is not valid according to election rules.
+    \end{itemize}
+\end{itemize}
+
+We mention separately an important but subtle property:
+\begin{itemize}
+    \item \textbf{Coercion resistance}: It is possible for a voter to privately cast multiple ballots that each invalidate any previous ballots.
+\end{itemize}
+
+At face value, this appears to contradict ballot soundness.
+However, we show later that it is possible to construct algorithms that permit voters to privately cast multiple ballots that are initially judged as valid by participants during the election, but later can be verifiably identified by talliers as re-votes, such that only the most recent ballot cast by the voter is included in the result.
+Further, this process does not reveal the identity of the voter, so voter anonymity is maintained.
+It is also possible to construct algorithms that do not allow for this type of coercion-resistant re-voting, should election rules or situations prohibit it.
+
+This property assumes the possibility that a voter may be bribed or coerced into voting a particular choice, but may be outside adversarial influence at a later time prior to the election ending.
+Coercion resistance is often related to the idea of a receipt-free election, where a voter is not able to provide evidence of its vote to a third party at any time; while Aura does not have this property (a voter can store its randomness and recreate a ballot to show the third party), we consider the listed form of coercion resistance to be useful nonetheless.
+
+
+\subsection{Prior work}
+
+There is a large and growing body of research over several decades relating to security models and instantiations of electronic voting protocols using a variety of cryptographic techniques, but we do not attempt to provide a comprehensive review here.
+
+Arguably the most relevant comparison to our current work is Helios, a popular deployed protocol for so-called ``boardroom" elections where many risks relevant to large-scale public elections are not present.
+The original Helios protocol \cite{helios} relies heavily on talliers, election organizers, and a central server; ballots are publicly linked to voter identity, and talliers act as a mixnet to shuffle ballots prior to decryption.
+Later work proposed an informally-described protocol update to Helios \cite{helios2} that replaces expensive verifiable shuffling with homomorphic ballot decryption and a set of proofs of ballot validity; however, individual ballots are still linked to voter identity.
+The research of \cite{cortier} introduces a straightforward verifiable ElGamal threshold cryptosystem for talliers that does not require a trusted dealer, and augments Helios to include this; however, the method provided is vulnerable to key cancellation and provides no particular guarantees on key validity.
+
+More recent investigations introduce complete voter privacy with different trust requirements, primarily using combinations of encrypted ballots and general zero-knowledge proving systems, to dissociate ballots from voter identity.
+For example, \cite{dimitriou} uses a zk-SNARK construction to anonymize ballots, and relies on organizer-supplied token randomizers as a form of coercion resistance; however, soundness and voter anonymity are compromised in the case of a malicious organizer producing the proving system common reference string.
+In Vote-SAVER \cite{saver}, voter anonymity is similarly provided by a zk-SNARK construction, and coercion resistance is achieved by having untrusted third parties conduct provable re-randomization; however, this crucially relies on proving system malleability, and therefore is currently limited (to our knowledge) to proving systems where soundness depends on a trusted organizer to produce a non-malicious common reference string.
+
+
+\subsection{Contribution}
+
+Aura presents a protocol combining several useful properties that improve on earlier work.
+
+First, we minimize the trust on election participants, including tally authorities with the joint capability to decrypt ballot results.
+In Aura, all cryptographic components may be instantiated with public verifiable parameters.
+Keys used by voters can be generated by voters themselves, and the key used for decrypting election results is constructed by tally authorities in a distributed and verifiable manner that does not require a trusted dealer.
+Ballots are dissociated from voter identity using voter-produced provable re-randomization and a set membership proof, and ballot validity is asserted by a combination of verifiable ElGamal encryption and a bit vector proving system.
+Even in the case of collusion between talliers (and even organizers) to decrypt individual ballots, voter anonymity is perfectly retained; and while multiple vote attempts by a voter can be reliably detected, this process occurs after the close of the election, and allows for safer mitigation of voter coercion by permitting such a voter to invalidate a coerced ballot anonymously.
+
+Aura uses constructions supporting efficient operations.
+The one-of-many proving system used to assert voter anonymity supports batch verification that greatly reduces the marginal complexity of verification, and scales extremely well in proof size even with a large number of voters.
+Further, a single bit vector commitment proving system is used to assert that a set of vote ciphertexts are valid, both with valid ElGamal vote messages and the overall number of choices selected by a voter; this proving system also supports batch verification and scales more efficiently than previous work, while remaining flexible for single- and multi-choice election rules.
+
+While we use well-studied techniques and cryptographic components to build Aura, we stress that the overall protocol analysis is informal, and we defer a formal security model and proofs to future work.
+
+
+\section{Cryptographic primitives}
+
+In this section, we describe the cryptographic constructions required for the Aura election protocol.
+
+
+\subsection{Distributed verifiable threshold ElGamal encryption}
+
+Aura requires a distributed verifiable threshold ElGamal cryptosystem.
+Such a system requires several important properties.
+Unlike in some threshold cryptosystems, key generation must be fully distributed and not require a trusted dealer.
+Additionally, the validity of the key generation must be publicly verifiable, such that distributed knowledge of valid key shares is asserted.
+Finally, it must be possible to produce proofs of valid encryption and decryption of messages with public verification.
+
+There are several algorithms used in such a construction:
+\begin{itemize}
+    \item $\func{KeyGen}$: This algorithm is run by each keyholder to generate a key share and a proof of validity.
+    \item $\func{VerifyKeyGen}$: This algorithm is run by any verifier to assert the validity of key shares and use them to assemble the corresponding group key.
+    \item $\func{Encrypt}$: This algorithm is run by any entity, and encrypts a scalar-valued message for a given public ElGamal key.
+    It also produces a proof that the encryption is valid for the public key.
+    \item $\func{VerifyEncrypt}$: This algorithm is run by any verifier, and asserts that a given encryption is valid.
+    \item $\func{PartialDecrypt}$: This algorithm is run by a keyholder.
+    It produces a partial decryption of an ElGamal ciphertext message, and a proof of validity.
+    \item $\func{VerifyDecrypt}$: This algorithm is run by any verifier.
+    It uses partial decryptions to produce a plaintext message, and asserts that each partial decryption is valid.
+\end{itemize}
+We note that while these algorithms need not be specific to threshold operations, our construction is, and requires a given threshold of keyholders to produce a successful decryption.
+
+The construction we describe here is based on that of \cite{cortier}, which describes a distributed threshold design intended for use in Helios.
+However, that construction is vulnerable to key cancellation attacks, does not assert proper joint key representation, and uses verification keys that (if maliciously crafted) do not allow for publicly-verifiable decryption.
+Further, the design is generic to support arbitrary group elements as messages, which is not secure in general \cite{boneh}; while its overlying protocol does not fall victim to this problem by the nature of its construction, the general design is vulnerable.
+Fortunately, the nature of Aura ballots is such that small scalar-valued messages are required, so recovery of such messages after decryption is trivial using brute-force methods not subject to denial-of-service attacks.
+We therefore modify the design to address these shortco\text{min}gs, specify abort points in the protocol, and indicate simplifications where possible.
+
+Let $pp_{\text{enc}} = (\G, \F, G, \{H_i\}_{i=0}^{k-1}, k, t, \nu)$ be the public parameters for such a cryptosystem, where $\G$ is a prime-order group where the discrete logarithm problem is hard, $\F$ is its scalar field, $G, \{H_i\}_{i=0}^{k-1} \in \G$ are generators with no efficiently-computable discrete logarithm relationship, $k > 0$ is the number of valid message generators, $t$ is the threshold of keyholders required for decryption, and $\nu$ is the total number of keyholders (so $1 \leq t \leq \nu)$.
+We assume that $pp_{\text{enc}}$ is available to all algorithms, which we describe now:
+\begin{itemize}
+    \item $\func{KeyGen}(\alpha) \mapsto (Y_\alpha, \Pi_\alpha^{\text{key}})$: The function takes as input a player index $1 \leq \alpha \leq \nu$.
+    It does the following:
+    \begin{enumerate}
+        \item Chooses a set $\{a_{\alpha,j}\}_{j=0}^{t-1} \subset \F$ of scalars uniformly at random, and defines the polynomial $$f_\alpha(x) = \sum_{j=0}^{t-1} a_{\alpha,j}x^j$$ and vector $C_\alpha = \{C_{\alpha,j}\}_{j=0}^{t-1} = \{a_{\alpha,j}G\}_{j=0}^{t-1}$ using these values.
+        \item Produces a proof of representation $\Pi_\alpha^{\text{rep}} = \func{RepProve}(G, C_{\alpha,0} ; a_{\alpha,0})$, and sends the tuple $(C_\alpha, \Pi_\alpha^{\text{rep}})$ to all other players.
+        \item On receipt of such a tuple $(C_\beta, \Pi_\beta^{\text{rep}})$ from another player $\beta$, verifies that $\func{RepVerify}(\Pi_\beta^{\text{rep}}, G, C_\beta) = 1$, and aborts otherwise.
+        \item For each $1 \leq \beta \leq \nu$, computes a value $y_{\alpha, \beta} = f_\alpha(\beta)$ and sends it to player $\beta$.
+        \item On receipt of such a value $y_{\beta,\alpha}$ from another player $\beta$, checks that $$\sum_{j=0}^{t-1} C_{\beta,j} = y_{\beta,\alpha}G$$ and aborts otherwise.
+        \item Computes its private key share $$y_\alpha = \sum_{\beta=1}^{\nu} y_{\beta,\alpha}$$ and public key share $Y_\alpha = y_\alpha G$ and public group key $$Y = \sum_{\beta=1}^{\nu} C_{\beta,0}.$$
+        \item Produces a proof of representation $\Pi_\alpha^{\text{key}} = \func{RepProve}(G, Y_\alpha ; y_\alpha)$.
+    \end{enumerate}
+    The function outputs $(Y_\alpha, \Pi_\alpha^{\text{key}})$.
+    
+    \item $\func{VerifyKeyGen}(\{Y_\alpha, \Pi_\alpha^{\text{key}}\}_{\alpha=1}^{\nu}) \mapsto Y$: The function takes as input a set of key shares and proofs from a set of $\nu$ players.
+    It does the following:
+    \begin{enumerate}
+        \item For each $1 \leq \alpha \leq \nu$, checks that $\func{RepVerify}(\Pi_\alpha^{\text{key}}, G, Y_\alpha) = 1$, and aborts otherwise.
+        \item Sets $Y = \sum_{\alpha=1}^{\nu} Y_\alpha$.
+    \end{enumerate}
+    The function outputs $Y$.
+    
+    \item $\func{Encrypt}(m, i, Y) \mapsto (D, E, \Pi_{\text{enc}})$: The function takes as input a message $m \in \F$, a message generator index $0 \leq i < k$, and a public key $Y$.
+    It does the following:
+    \begin{enumerate}
+        \item Chooses a nonce $r \in \F$ uniformly at random.
+        \item Sets $D = rG$ and $E = rY + mH_i$.
+        \item Produces a proof of encryption: $$\Pi_{\text{enc}} = \func{EncValProve}(G, Y, H_i, D, E ; (r, m))$$
+    \end{enumerate}
+    The function outputs $(D, E, \Pi_{\text{enc}})$.
+    
+    \item $\func{VerifyEncrypt}(Y, i, D, E, \Pi_{\text{enc}}) \mapsto \{0, 1\}$: The function takes as input an ElGamal public key $Y$, message generator index $0 \leq i < k$, ElGamal ciphertext $(D, E)$, and a proof of encryption.
+    If $$\func{EncValVerify}(\Pi_{\text{enc}}, G, Y, H_i, D, E) = 1$$ it outputs $1$; otherwise, it outputs $0$.
+    
+    \item $\func{PartialDecrypt}(y_\alpha, D, E) \mapsto (R_\alpha, \Pi_\alpha^{\text{dec}})$: The function takes as input a private key share $y_\alpha$ and ElGamal ciphertext $(D, E)$.
+    It does the following:
+    \begin{enumerate}
+        \item Computes $R_\alpha = y_\alpha D$.
+        \item Produces a proof of discrete logarithm equality: $$\Pi_\alpha^{\text{dec}} = \func{EqProve}(D, G, R_\alpha, y_\alpha G ; y_\alpha)$$
+    \end{enumerate}
+    The function outputs $(R_\alpha, \Pi_\alpha^{\text{dec}})$.
+    
+    \item $\func{VerifyDecrypt}(D, E, \{j, Y_j, R_j, \Pi_j^{\text{dec}}\}_{j=1}^t) \mapsto m$: The function takes as input ElGamal ciphertext $(D, E)$, a threshold set of $t$ player indices, corresponding public key shares, and associated partial decryption data.
+    We note that for the sake of notation convenience, the set of players is reindexed here; in practice, any threshold of players may be used with their corresponding indices.
+    It does the following:
+    \begin{enumerate}
+        \item For each $1 \leq j \leq t$, checks that $\func{EqVerify}(\Pi_j^{\text{dec}}, D, G, R_j, Y_j) = 1$, and aborts otherwise.
+        \item For each $1 \leq j \leq t$, computes the corresponding Lagrange coefficient: $$\lambda_j = \prod_{i=1, i \neq j}^t \frac{i}{i - j}$$
+        \item Computes the following: $$M = E - \sum_{j=1}^t \lambda_j R_j$$
+        \item Uses brute force (or another appropriate computational method) to find $m \in \F$ such that $mH = M$.
+    \end{enumerate}
+    The function outputs $m$.
+\end{itemize}
+
+
+\subsection{Bit vector commitment proving system}
+
+We require a proving system that, given a group element, proves in zero knowledge that it is a Pedersen vector commitment to a ``bit sequence'' of field elements in the set $\{0,1\}$ whose sum is a given value.
+In the context of the Aura protocol, this proving system efficiently shows that a set of ballot ciphertexts encrypt valid choices according to election rules, described later.
+
+Let $pp_{\text{bit}} = \left( \G, \F, w, k, \{G_i\}_{i=0}^{k-1}, H \right)$ be the public parameters for such a proving system.
+Here $\G$ is a prime-order group where the discrete logarithm problem is hard, $\F$ is its scalar field, $w$ and $k$ are positive integers, and the elements $\{G_i\}_{i=0}^{k-1}, H \in \G$ are generators with no efficiently-computable discrete logarithm relationship.
+The proving system itself is a sigma protocol for the relation
+\begin{multline*}
+\mathcal{R}_{\text{bit}} = \left\{ pp_{\text{bit}}, B \in \G ; \{b_i\}_{i=0}^{k-1}, r \in \F : B = rH + \sum_{i=0}^{k-1} b_i G_i, \right. \\
+\left. b_i \in \{0,1\} \forall i \in [0,k), \sum_{i=0}^{k-1} b_i = w \right\}
+\end{multline*}
+that is complete, special honest-verifier zero knowledge, and special sound.
+
+Any public-coin instantiation of an interactive protocol for this relation can be made non-interactive by applying the (strong) Fiat-Shamir transform.
+For the non-interactive protocol, define the following prover and verifier algorithms for $\mathcal{R}_{\text{bit}}$, assu\text{min}g fixed parameters $pp_{\text{bit}}$ have already been selected:
+\begin{itemize}
+	\item $\func{BitProve}\left( B ; \{b_i\}_{i=0}^{k-1}, r \right) \mapsto \Pi_{\text{bit}}$ accepts as input statement and witness elements, and outputs a proof.
+	\item $\func{BitVerify}\left( \Pi_{\text{bit}}, B \right) \mapsto \{0, 1\}$ accepts as input a proof and statement elements, and outputs a bit to indicate whether or not the proof is valid.
+\end{itemize}
+
+We describe here a simple generalization of an existing proving system by Bootle \textit{et al.} that originally was used to show that the bit sequence elements sum to the fixed value $1$, and is an instantiation of the required proving system \cite{bootle}.
+For completeness, we describe the full interactive protocol here.
+
+\begin{enumerate}
+\item The prover selects $r_A, r_C, r_D, \{a_i\}_{i=1}^{k-1} \in \F$ uniformly at random, and sets $$a_0 = -\sum_{i=1}^{k-1} a_i.$$
+\item The prover computes the Pedersen vector commitments
+\begin{alignat*}{1}
+	A &= r_A H + \sum_{i=0}^{k-1} a_i G_i \\
+	C &= r_C H + \sum_{i=0}^{k-1} a_i(1 - 2b_i)G_i \\
+	D &= r_D H - \sum_{i=0}^{k-1} a_i^2 G_i
+\end{alignat*}
+and sends $A, C, D$ to the verifier.
+\item The verifier selects a challenge $x \in \F$ uniformly at random, and sends $x$ to the prover.
+\item For each $i \in [1,k)$, the prover sets $f_i = b_i x + a_i$.
+The prover also sets $z_A = rx + r_A$ and $z_C = r_C x + r_D$, and sends $\{f_i\}_{i=1}^{k-1}, z_A, z_C$ to the verifier.
+\item The verifier sets $$f_0 = wx - \sum_{i=1}^{k-1} f_i$$ and accepts the proof if and only if the following hold:
+\begin{alignat*}{1}
+	A + xB &= z_A H + \sum_{i=0}^{k-1} f_i G_i \\
+	xC + D &= z_C H + \sum_{i=0}^{k-1} f_i(x - f_i)G_i		
+\end{alignat*}
+\end{enumerate}
+
+
+\subsection{Commitment set proving system}
+
+We require a proving system that, given a set of group elements, proves in zero knowledge that one of them is a Pedersen commitment to zero.
+More specifically, we also include an ``offset'' group element that is subtracted from each element of the set first as a re-randomization of a nonzero input commitment, which is helpful for computational efficiency in practice.
+In the context of the Aura protocol, this proving system asserts that a ballot was produced by an eligible voter without revealing the voter's identity.\footnote{We stress that other forms of external information, like ti\text{min}g or network data, may leak information about voter identity; here we assert voter anonymity in a cryptographic context.}
+
+Let $pp_{\text{set}} = (\G, \F, G, H, n, m)$ be the public parameters for such a proving system.
+Here $\G$ is a prime-order group where the discrete logarithm problem is hard, $\F$ is its scalar field, $G, H \in \G$ are generators with no efficiently-computable discrete logarithm relationship, and $n, m > 1$ are integers.
+For notation convenience, let $N = n^m$.
+The proving system itself is a sigma protocol for the relation
+$$\mathcal{R}_{\text{set}} = \left\{ pp_{\text{set}}, \{C_i\}_{i=0}^{N-1}, C' \in \G ; l \in [0,N), r \in \F : C_l - C' = rH \right\}$$
+that is complete, special honest-verifier zero knowledge, and special sound.
+
+Any public-coin instantiation of an interactive protocol for this relation can be made non-interactive by applying the (strong) Fiat-Shamir transform.
+For the non-interactive protocol, define the following prover and verifier algorithms for $\mathcal{R}_{\text{set}}$, assu\text{min}g fixed parameters $pp_{\text{set}}$ have already been selected:
+\begin{itemize}
+	\item $\func{SetProve}\left( \{C_i\}_{i=0}^{N-1}, C' ; l, r \right) \mapsto \Pi_{\text{set}}$ accepts as input statement and witness elements, and outputs a proof.
+	\item $\func{SetVerify}\left( \Pi_{\text{set}}, \{C_i\}_{i=0}^{N-1}, C' \right) \mapsto \{0, 1\}$ accepts as input a proof and statement elements, and outputs a bit to indicate whether or not the proof is valid.
+\end{itemize}
+
+The one-of-many proving system in \cite{bootle}, with a simple modification as done in \cite{spark}, may be used for this purpose.
+
+
+\subsection{Other proving systems}
+
+We require several other simple proving systems relating to assertions of representation and discrete logarithm equality that are used by other cryptographic primitives in Aura.
+Each such proving system has a standard Schnorr-type non-interactive instantiation provable to be complete, special sound, and special honest-verifier zero knowledge.
+
+For each proving system, we list the public parameters, relevant relation, and prover and verifier functions; we omit the specific instantiations.
+
+
+\subsubsection{Representation proving system}
+
+This proving system asserts knowledge of a group element representation.
+The public parameters are $pp_{\text{rep}} = (\G, \F)$, where $\G$ is a prime-order group where the discrete logarithm problem is hard, and $\F$ is its scalar field.
+The relation is the following:
+$$\mathcal{R}_{\text{rep}} = \{ pp_{\text{rep}}, \{G_i\}_{i=0}^{n-1}, Y ; \{y_i\}_{i=0}^{n-1} : Y = \sum_{i=0}^{n-1} y_i G_i \}$$
+The relevant algorithms are the following:
+\begin{itemize}
+    \item $\func{RepProve}(\{G_i\}_{i=0}^{n-1}, Y ; \{y_i\}_{i=0}^{n-1}) \mapsto \Pi_{\text{rep}}$
+    \item $\func{RepVerify}(\Pi_{\text{rep}}, \{G_i\}_{i=0}^{n-1}, Y) \mapsto \{0, 1\}$
+\end{itemize}
+
+
+\subsubsection{Encryption validity proving system}
+
+This proving system asserts a valid ElGamal encryption using a specific representation assertion.
+The public parameters are $pp_{\text{val}} = (\G, \F)$, where $\G$ is a prime-order group where the discrete logarithm problem is hard, and $\F$ is its scalar field.
+The relation is the following:
+$$\mathcal{R}_{\text{val}} = \{ pp_{\text{enc}}, G, Y, H, D, E ; (r, m) : D = rG, E = mY + rH \}$$
+The relevant algorithms are the following:
+\begin{itemize}
+    \item $\func{EncValProve}(G, Y, H, D, E ; r, m) \mapsto \Pi_{\text{enc}}$
+    \item $\func{EncValVerify}(\Pi_{\text{enc}}, G, Y, H, D, E) \mapsto \{0, 1\}$
+\end{itemize}
+
+
+\subsubsection{Serial validity proving system}
+
+This proving system asserts a valid ElGamal encryption using a specific representation assertion matches a particular partial commitment opening.
+The public parameters are $pp_{\text{ser}} = (\G, \F)$, where $\G$ is a prime-order group where the discrete logarithm problem is hard, and $\F$ is its scalar field.
+The relation is the following:
+\begin{multline*}
+\mathcal{R}_{\text{ser}} = \left\{ pp_{\text{ser}}, F, G, H, Y, C, D, E ; (s, r, r') : \right. \\
+\left. C = sG + rH, D = r'G, E = sF + r'Y \right\}
+\end{multline*}
+The relevant algorithms are the following:
+\begin{itemize}
+    \item $\func{SerValProve}(F, G, H, Y, C, D, E ; s, r, r') \mapsto \Pi_{\text{ser}}$
+    \item $\func{SerValVerify}(\Pi_{\text{ser}}, F, G, H, Y, C, D, E) \mapsto \{0, 1\}$
+\end{itemize}
+
+
+\subsubsection{Discrete logarithm equality proving system}
+
+This proving system asserts two group elements share the same discrete logarithm with respect to specified generators.
+The public parameters are $pp_{\text{eq}} = (\G, \F)$, where $\G$ is a prime-order group where the discrete logarithm problem is hard, and $\F$ is its scalar field.
+The relation is the following:
+$$\mathcal{R}_{\text{eq}} = \{ pp_{\text{eq}}, G, H, Y, Y' ; y : Y = yG, Y' = yH \}$$
+The relevant algorithms are the following:
+\begin{itemize}
+    \item $\func{EqProve}(G, H, Y, Y' ; y) \mapsto \Pi_{\text{eq}}$
+    \item $\func{EqVerify}(\Pi_{\text{eq}}, G, H, Y, Y') \mapsto \{0, 1\}$
+\end{itemize}
+
+
+\subsection{Unforgeable signature scheme}
+
+In Aura, different types of participants submit messages to a public bulletin board.
+For some of the messages, observers must verify their authenticity in order to assert they are created by the claimed entity.
+For other messages, this property is not required (or even desired).
+We therefore assume the existence of an unforgeable signature scheme on arbitrary messages that can be bound to contexts to mitigate replay attacks.
+Constructions like context-prefixed Schnorr digital signatures may be used for this purpose.
+In the protocol, we describe which entities are assumed to possess signing and verification keys for this signature scheme.
+
+
+\section{Protocol}
+
+
+\subsection{Overview}
+
+There are several types of entities in Aura that interact during the election process.
+
+\begin{itemize}
+	\item \textbf{Organizers} set up protocol parameters, elections, voters, and talliers.
+	This role may be separated based on specific application needs and trust requirements.
+	\item \textbf{Voters} cast ballots in elections.
+	\item \textbf{Talliers} collaboratively compute and publish results at the end of elections.
+	\item \textbf{Verifiers} assert that the setup, ballots, and tallier results are complete, accurate, and valid.
+	Any entity or participant can act as a verifier.
+\end{itemize}
+We also assume a public bulletin board $\mathcal{B}$ is used to store all public data; this includes election parameters, keys, ballots, tally data, and other information.
+The instantiation of $\mathcal{B}$ is especially suited for a blockchain-type construction for which modification or erasure of posted data is infeasible.
+
+An election consists of several steps, represented by algorithms that we describe in detail later.
+
+\begin{itemize}
+	\item $\func{SetupElection}$: This algorithm is run by organizers and sets up $\mathcal{B}$, outputs public parameters for the election, identifies authorized voters in the election, and selects talliers.
+	\item $\func{SetupTally}$: This algorithm is run by talliers and sets up the threshold keys used for result decryption.
+	\item $\func{SetupVoter}$: This algorithm is run by voters and sets up the ballot keys used to cast ballots.
+	\item $\func{VerifySetup}$: This algorithm can be run by any network participant to check the correctness of the setup processes.
+	\item $\func{Vote}$: This algorithm is run by voters; it produces a ballot and submits it to $\mathcal{B}$.
+	\item $\func{VerifyBallot}$: This algorithm is run by voters or any other network participant; it checks that a ballot is valid.
+	\item $\func{Tally}$: This algorithm is run by talliers after the election concludes; it produces the results of the election.
+	\item $\func{VerifyTally}$: This algorithm is run by verifiers after the results are produced; it asserts that the results represent all valid ballots correctly.
+\end{itemize}
+
+In cases where the trust model for an election differs from that implied here, the setup algorithms may differ, and yield different analysis.
+
+
+\subsection{Algorithms}
+
+We assume that the organizer, the talliers, and all voters possess signing keys (with corresponding verification keys) for the unforgeable signature scheme, which can be used to sign and verify arbitrary messages to authenticate them.
+The distribution of such keys is outside the scope of this protocol.
+
+
+\subsubsection{\texorpdfstring{$\func{SetupElection}$}{SetupElection}}
+
+The organizer does the following:
+\begin{enumerate}
+\item Chooses a unique election identifier $\mathbb{I} \in \{0,1\}^*$, and prepares parameter $m_{\text{elec}}$ as a human-readable description of the election, which may include auxiliary information for voters as necessary by election rules.
+\item Selects parameter $k > 0$ as the number of candidates or choices in the election and, for each $i \in [0,k)$, produces a pair $(i,m_i)$, where $m_i$ is a human-readable description of choice $i$.
+\item Selects parameters $k_{\text{min}}$ and $k_{\text{max}}$ corresponding (respectively) to the minimum and maximum number of choices a voter may make; we require that $1 \leq k_{\text{min}} \leq k_{\text{max}} \leq k$.
+For convenience, let $k' = k + k_{\text{max}} - k_{\text{min}}$.
+\item For each $i \in [0,k')$, samples a generator $H_i \in \G$ uniformly at random in a publicly-verifiable way.
+\item Samples group generators $F, G, H \in \G$ uniformly at random in a publicly-verifiable way.
+\item Prepares a list $L_{\text{voters}}$ of the $N_{\text{voters}}$ voter verification keys corresponding to authorized voters in the election, and lets $n,m > 1$ such that $N_{\text{voters}} = n^m$.
+\item Prepares a list $L_{\text{tally}}$ of the $N_{\text{tally}} > 0$ tallier verification keys corresponding to the authorized talliers in the election, and a threshold $1 \leq t \leq N_{\text{tally}}$ of talliers required for result decryption.
+\item Prepares the public parameters for required underlying cryptographic constructions:
+\begin{itemize}
+\item Samples a prime-order group $\G$ with a scalar field $\F$.
+\item Sets $pp_{\text{enc}} = (\G, \F, \{H_i\}_{i=0}^{k'-1}, k', t, N_{\text{tally}})$ as the parameters for a distributed verifiable ElGamal encryption system.
+\item Sets $pp_{\text{bit}} = (\G, \F, k_{\text{max}}, k', \{H_i\}_{i=0}^{k'-1}, -)$ as the parameters for a bit vector commitment proving system, where we leave the final parameter undefined (to be set at a later step).
+\item Sets $pp_{\text{set}} = (\G, \F, G, H, n, m)$ as the parameters for a commitment set proving system.
+\item Sets $pp_{\text{rep}} = (\G, \F)$ as the parameters for a representation proving system.
+\item Sets $pp_{\text{val}} = (\G, \F)$ as the parameters for an encryption validity proving system.
+\item Sets $pp_{\text{ser}} = (\G, \F)$ as the parameters for a serial validity proving system.
+\item Sets $pp_{\text{eq}} = (\G, \F)$ as the parameters for a discrete logarithm equality proving system.
+\end{itemize}
+\item Assembles the protocol public parameters
+\begin{multline*}
+    pp = (\mathbb{I}, m_{\text{elec}}, k, \{i,m_i\}_{i=0}^{k-1}, k_{\text{min}}, k_{\text{max}}, \G, \F, \{H_i\}_{i=0}^{k'-1}, F, G, H, \\
+    L_{\text{voters}}, N_{\text{voters}}, n, m, L_{\text{tally}}, N_{\text{tally}}, t)
+\end{multline*}
+and posts them to $\mathcal{B}$ as an authenticated message signed with the organizer signing key.
+\end{enumerate}
+
+The public parameters $pp$ are assumed to be available to all participants and algorithms; further, all other subprotocol public parameters can be deterministically produced from $pp$.
+
+
+\subsubsection{\texorpdfstring{$\func{SetupTally}$}{SetupTally}}
+
+Each tallier with index $1 \leq \alpha \leq N_{\text{tally}}$ does the following:
+\begin{enumerate}
+\item Verifies the authenticated organizer message on $\mathcal{B}$ containing $pp$, and checks the validity of the parameters.
+\item Runs $\func{KeyGen}(\alpha) \mapsto (Y_\alpha, \Pi_\alpha^{\text{key}})$ interactively with the other talliers.
+\item Posts the values $(\alpha, Y_\alpha, \Pi_\alpha^{\text{key}})$ to $\mathcal{B}$ as an authenticated message signed with its tallier signing key from $L_{\text{tally}}$.
+\end{enumerate}
+
+
+\subsubsection{\texorpdfstring{$\func{SetupVoter}$}{SetupVoter}}
+
+Each voter with index $0 \leq i < N_{\text{voters}}$ does the following:
+\begin{enumerate}
+    \item Verifies the authenticated organizer message on $\mathcal{B}$ containing $pp$, and checks the validity of the parameters.
+    \item Selects $s_i, r_i \in \F$ uniformly at random, and privately stores these values.
+    \item Computes a ballot key $C_i = s_i G + r_i H$.
+    \item Generates a proof of representation $\func{RepProve}(\{G, H\}, C_i ; \{s, r\}) \mapsto \Pi_{\text{rep},i}$.
+    \item Posts $(i, C_i, \Pi_{\text{rep},i})$ to $\mathcal{B}$ as an authenticated message signed with its voter signing key from $L_{\text{voters}}$.
+\end{enumerate}
+We note that it is safe for a voter to reuse their ballot key across multiple elections.
+
+
+\subsubsection{\texorpdfstring{$\func{VerifySetup}$}{VerifySetup}}
+
+The verifier does the following:
+\begin{enumerate}
+    \item Verifies the unique authenticated organizer message on $\mathcal{B}$ containing $pp$, and checks the validity of the parameters.
+    \item For each $1 \leq \alpha \leq N_{\text{tally}}$, verifies the unique authenticated tallier message on $\mathcal{B}$ containing $(\alpha, Y_\alpha, \Pi_\alpha^{\text{key}})$ using the corresponding verification key from $L_{\text{tally}}$.
+    \item Verifies the tally keys by running $\func{VerifyKeyGen}(\{Y_\alpha, \Pi_\alpha^{\text{key}}\}_{\alpha=1}^{\nu}) \mapsto Y$.
+    \item For each $0 \leq i < N_{\text{voters}}$, verifies the unique authenticated voter message on $\mathcal{B}$ containing $(i, C_i, \Pi_{\text{rep},i})$, and verifies the ballot key by checking that $\func{RepVerify}(\Pi_{\text{rep},i}, \{G, H\}, C_i\} \mapsto 1$.
+\end{enumerate}
+At this point, all participants use $Y$ as the undetermined parameter in $pp_{\text{bit}}$.
+
+
+\subsubsection{\texorpdfstring{$\func{Vote}$}{Vote}}
+
+Each voter with index $0 \leq i < N_{\text{voters}}$ does the following:
+\begin{enumerate}
+    \item Constructs a vector $c_i = (c_{i,j})_{j=0}^{k-1}$ representing its choices among the $k$ options, where
+    \begin{displaymath}
+        c_{i,j} = \left\{
+        \begin{array}{ll}
+            1 & \text{if the voter chooses option } j \\
+            0 & \text{otherwise}
+        \end{array}
+        \right.
+    \end{displaymath}
+    and $k_{\text{min}} \leq \sum_{j=0}^{k-1} c_{i,j} \leq k_{\text{max}}$.
+    \item For $j \in [0,k)$, encrypts each choice by setting $(D_{i,j}, E_{i,j}, \Pi_{\text{enc},i,j}) = \func{Encrypt}(c_{i,j}, j, Y)$.
+    \item For $j \in [k,k')$, extends the vector $c_i$ by setting
+    \begin{displaymath}
+        c_{i,j} = \left\{
+        \begin{array}{ll}
+            1 & \text{if } j < k + k_{\text{max}} - \sum_{j=0}^{k-1} c_{i,j} \\
+            0 & \text{otherwise}
+        \end{array}
+        \right.
+    \end{displaymath}
+    for padding purposes, and computes encryptions $(D_{i,j}, E_{i,j}, \Pi_{\text{enc},i,j}) = \func{Encrypt}(c_{i,j}, j, Y)$.
+    \item Computes a bit vector commitment proof $$\Pi_{\text{bit},i} = \func{BitProve}\left( \sum_{j=0}^{k'-1} E_{i,j} ; \{c_{i,j}\}_{j=0}^{k'-1}, r \right),$$ where $r$ is the sum of all nonces used in encryption proofs for $j \in [0,k'-1)$.
+    \item Chooses a nonce $r_i' \in \F$ uniformly at random, and computes the serial offset $C_i' = s_i G + r_i' H$.
+    \item Encrypts the ballot serial number by choosing a nonce $r_i'' \in \F$ uniformly at random and computing $D_i' = r_i'' G$ and $E_i' = s_i F + r_i'' Y$.
+    \item Assembles $\overline{C}$ to be the set of all voter commitments $\{C_i\}$ corresponding to voter verification keys in $L_{\text{voters}}$, and generates a commitment set proof
+    $$\Pi_{\text{set},i} = \func{SetProve}\left(\overline{C}, C_i' ; l_i, r_i - r_i' \right)$$
+    where $\overline{C}_{l_i} = C_i$.
+    \item Assembles a ballot tuple:
+    $$B_i = \left( pp, (D_{i,j}, E_{i,j}, \Pi_{\text{enc},i,j})_{j=0}^{k'-1}, \Pi_{\text{bit},i}, C_i', D_i', E_i', \Pi_{\text{set},i} \right)$$
+    \item Generates a proof of serial number validity
+    $$\Pi_{\text{ser},i} = \func{SerValProve}(F, G, H, Y, C_i', D_i', E_i' ; s_i, r_i', r_i'')$$
+    that binds $B_i$ to its initial transcript.
+    \item Posts the ballot tuple $B_i$ and binding proof $\Pi_{\text{ser},i}$ to $\mathcal{B}$ as the voter's anonymized and authenticated ballot.
+\end{enumerate}
+
+If the voter is coerced or bribed to submit a ballot of an adversary's choice, the voter may cast another ballot once outside of the adversary's influence by repeating these steps.
+As shown below, such duplicate ballots will be accepted to $\mathcal{B}$, but will be excluded from the final tally except for the last such ballot cast by the voter.
+This is intended to provide a weak form of coercion resistance.
+
+
+\subsubsection{\texorpdfstring{$\func{VerifyBallot}$}{VerifyBallot}}
+
+Given a semantically-correct ballot (without explicit voter index $i$) of the form
+$$B = \left( (D_j, E_j, \Pi_{\text{enc},j})_{j=0}^{k'-1}, \Pi_{\text{bit}}, C', D', E', \Pi_{\text{set}} \right),$$
+any verifier does the following:
+\begin{enumerate}
+    \item Checks that $\func{SerValVerify}(\Pi_{\text{ser}}, F, G, H, Y, C', D', E') \mapsto 1$ using $B$ as a transcript binding, and aborts otherwise.
+    \item For each $j \in [0,k')$, checks that $\func{VerifyEncrypt}(Y, j, D_j, E_j, \Pi_{\text{enc},j}) \mapsto 1$, and aborts otherwise.
+    \item Checks that $$\func{BitVerify}\left( \Pi_{\text{bit}}, \sum_{j=0}^{k'-1} E_j \right) \mapsto 1,$$ and aborts otherwise.
+    \item Assembles the set $\overline{C}$ as in $\func{Vote}$, checks that $\func{SetVerify}(\Pi_{\text{set}}, \overline{C}, C') \mapsto 1$, and aborts otherwise.
+\end{enumerate}
+
+
+\subsubsection{\texorpdfstring{$\func{Tally}$}{Tally}}
+
+The talliers first verifiably decrypt all ballot serial numbers in order to complete the assertion of their validity and discard (for coercion-resistance purposes) recast ballots by common anonymized voters.
+Assume a set of $t$ talliers indexed $1 \leq j \leq t$.
+Each such tallier does the following for each valid ballot $i$ appearing on $\mathcal{B}$:
+\begin{enumerate}
+    \item Runs $\func{PartialDecrypt}(y_j, D_i', E_i') \mapsto (R_{\text{ser},i,j}, \Pi_{\text{ser},i,j})$, and posts the tuple $(R_{\text{ser},i,j}, \Pi_{\text{ser},i,j}^{\text{dec}})$ to $\mathcal{B}$ as an authenticated message signed with its tallier signing key from $L_{\text{tally}}$.
+    \item After receiving all such partial decryptions from the threshold cohort and verifying the authenticated messages, partially (without attempting to brute-force the final decryption) runs $$\func{VerifyDecrypt}(D_i', E_i', \{j, Y_j, R_{\text{ser},i,j}^{\text{dec}}, \Pi_{\text{ser},i,j}\}_{j=1}^t)$$ to obtain a serial number public key $S_i \in \G$.
+    \item Verifies the signature on the ballot $i$ using $S_i$ as the verification public key (against generator $F$).
+    \item If $S_i$ appears with any other valid ballot, discard all but the most recent such ballot, according to bulletin board ordering.
+\end{enumerate}
+
+At this point, let there be $N_{\text{valid}}$ remaining valid ballots, indexed by $i$.
+The talliers now verifiably produce the tally of all $N_{\text{valid}}$ such ballots.
+Each tallier with index $1 \leq j \leq t$ does the following:
+\begin{enumerate}
+    \item For each $l \in [0,k)$, computes the ballot sums for choice $l$ by setting $$\overline{D}_l = \sum_{i=0}^{N_{\text{valid}}-1} D_{i,l}$$ and $$\overline{E}_l = \sum_{i=0}^{N_{\text{valid}}-1} E_{i,l},$$ and partially decrypting the sums:
+    $$\func{PartialDecrypt}(y_j, \overline{D}_l, \overline{E}_l) \mapsto (R_{l,j},\Pi_{l,j}^{\text{dec}})$$
+    \item Posts the set of tuples $\{(R_{l,j},\Pi_{l,j}^{\text{dec}})\}_{l=0}^{k-1}$ to $\mathcal{B}$ as an authenticated message signed with its tallier signing key from $L_{\text{tally}}$.
+\end{enumerate}
+
+
+\subsubsection{\texorpdfstring{$\func{VerifyTally}$}{VerifyTally}}
+
+Any verifier checks the authenticity of all tallier messages posted from $\func{Tally}$ and does the following:
+\begin{enumerate}
+    \item For each valid ballot $i$ appearing on $\mathcal{B}$:
+    \begin{enumerate}
+        \item Partially (without attempting to brute-force the final decryption) runs $$\func{VerifyDecrypt}(D_i', E_i', \{j, Y_j, R_{\text{ser},i,j}^{\text{dec}}, \Pi_{\text{ser},i,j}\}_{j=1}^t)$$ to obtain a serial number public key $S_i \in \G$, and aborts if this fails.
+        \item Verifies the signature on the ballot $i$ using $S_i$ as the verification public key (against generator $F$), and aborts if this fails.
+        \item If $S_i$ appears with any other valid ballot, discard all but the most recent such ballot, according to bulletin board ordering.
+    \end{enumerate}
+    \item Assembles the set of $N_{\text{valid}}$ remaining valid ballots, now indexed by $i$.
+    \item For each choice index $l \in [0,k)$:
+    \begin{enumerate}
+        \item Computes the ballot sums for choice $l$ by setting $$\overline{D}_l = \sum_{i=0}^{N_{\text{valid}}-1} D_{i,l}$$ and $$\overline{E}_l = \sum_{i=0}^{N_{\text{valid}}-1} E_{i,l}.$$
+        \item Finalizes the decryption $$\func{VerifyDecrypt}(\overline{D}_l, \overline{E}_l, \{j, Y_j, R_{l,j}^{\text{dec}}, \Pi_{l,j}^{\text{dec}}\}_{j=1}^t) \mapsto t_l$$ to obtain the total votes $t_l$ for choice $l$, and aborts if this fails.
+    \end{enumerate}
+\end{enumerate}
+
+
+\section{Remarks}
+
+We conclude with informal observations and remarks about Aura's security and efficiency.
+
+\subsection{Security}
+
+While we do not provide a formal security analysis here, it is relevant to discuss how Aura's design works toward the properties introduced earlier.
+
+All cryptographic components in Aura are instantiated with public parameters.
+While the key generation process for talliers is inherently a multiparty computation, this is a verifiable process that itself does not require specific trust for its instantiation.
+
+Correctness follows in a straightforward manner by inspection.
+
+Universal verifiability is achieved.
+Any observer can check ballot validity by running $\func{VerifyBallot}$ on all ballots appearing on the bulletin board, and run $\func{VerifyTally}$ to check that these ballots all appear.
+The final tally validity is further assured in $\func{VerifyTally}$ from the use of the verifiable threshold decryption construction.
+
+Vote privacy follows from the properties of the primitives used in $\func{Vote}$.
+It is possible for a threshold cohort of talliers to decrypt individual ballots, and hence we must assume no such cohort is malicious.
+No observer, however, can produce any such decryption or otherwise distinguish individual ballot contents due to their underlying encryption and the properties of the related $\func{Vote}$ proofs.
+
+The use of a commitment set proof asserts voter anonymity, which follows even if the talliers or organizer are malicious or collude.
+
+Ballot soundness is achieved through several checks.
+Since the commitment set proof is sound, no unauthorized voter knows an opening to a commitment contained in such a valid set, and hence cannot cast a valid ballot.
+If the voter has already cast a valid ballot, any subsequent ballot must use the same serial number since the proof of serial number validity is sound and the commitments are computationally binding.
+
+Coercion resistance, which is related to soundness, is achieved similarly.
+
+
+\subsection{Efficiency}
+
+Aura can operate with good efficiency.
+
+The most computationally-expensive construction in an Aura election is the commitment set membership proof associated to each ballot, on the assumption that the number of voters $N_{\text{voters}}$ will exceed the number of talliers $N_{\text{tally}}$ and choices $k$ in the election.
+
+The size of this proof scales as $O(\log(N_{\text{voters}}))$ using the instantiation referenced.
+While verification apparently scales as $O(N_{\text{voters}})$, the use of efficient multiscalar multiplication algorithms \cite{pippenger} can reduce this complexity to $O(N_{\text{voters}}/\log(N_{\text{voters}}))$.
+
+Further, the instantiation supports batch verification.
+When verifying proofs from multiple ballots, verifier weighting of common group elements in the required multiscalar multiplication evaluation makes the marginal verification complexity constant, amortizing the overall cost across the batch.
+Interestingly, this use of batch verification can make overall Aura ballot verification several times more efficient than existing efficient mixnet constructions \cite{efficient_shuffle,groth_shuffle}.
+
+Other verification steps in $\func{VerifySetup}$, $\func{VerifyBallot}$, and $\func{VerifyTally}$ imply lower complexity, or may be similarly batched for improved efficiency.
+
+These observations make Aura a competitive candidate for suitable applications.
+
+
+\bibliographystyle{plain}
+\bibliography{main}
+
+\end{document}
+
