@@ -34,7 +34,7 @@ Verifiable electronic voting, where a public election record is employed for tra
 
 Requirements, risks, and threat models in elections are complex and varied.
 Ballot anonymity is often required and reasonably guaranteed in physical elections, where ballots contain no identifying information about the voter at the time of tallying.
-Avoidance of voter coercion and bribery may also be important in major elections; a voter entering a voting booth alone where photography is prohibited can prevent this in practice, but this may not be case if the election is conducted online.
+Avoidance of voter coercion and bribery may also be important in major elections; a voter entering a voting booth alone where photography is prohibited can prevent this in practice, but this may not be the case if the election is conducted online.
 
 
 \subsection{Requirements}
@@ -109,6 +109,7 @@ Further, the design is generic to support arbitrary group elements as messages, 
 We modify the design to address these shortcomings, specify abort points in the protocol, and indicate simplifications where possible.
 
 Let $pp_{\text{enc}} = (\G, \F, G, \{H_i\}_{i=0}^{k-1}, k, t, \nu)$ be the public parameters for the construction, where $G, \{H_i\}_{i=0}^{k-1} \in \G$ are independent generators, $k > 0$ is the number of valid message generators, $t$ is the threshold of keyholders required for decryption, and $\nu$ is the total number of keyholders (so $1 \leq t \leq \nu)$.
+The algorithms we define here rely on several auxiliary proving systems; these are introduced and defined shortly, but we reference them now.
 We assume that $pp_{\text{enc}}$ is available to all algorithms, which we describe now:
 \begin{itemize}
     \item $\func{KeyGen}(\alpha) \mapsto (Y_\alpha, \Pi_\alpha^{\text{key}})$: The function takes as input a player index $1 \leq \alpha \leq \nu$.
@@ -116,9 +117,9 @@ We assume that $pp_{\text{enc}}$ is available to all algorithms, which we descri
     \begin{enumerate}
         \item Chooses a set $\{a_{\alpha,j}\}_{j=0}^{t-1} \subset \F$ of scalars uniformly at random, and defines the polynomial \[ f_\alpha(x) = \sum_{j=0}^{t-1} a_{\alpha,j}x^j\] and vector $C_\alpha = \{C_{\alpha,j}\}_{j=0}^{t-1} = \{a_{\alpha,j}G\}_{j=0}^{t-1}$ using these values.
         \item Produces a proof of representation $\Pi_\alpha^{\text{rep}} = \func{RepProve}(G, C_{\alpha,0} ; a_{\alpha,0})$, and sends the tuple $(C_\alpha, \Pi_\alpha^{\text{rep}})$ to all other players.
-        \item On receipt of such a tuple $(C_\beta, \Pi_\beta^{\text{rep}})$ from another player $\beta$, verifies that $\func{RepVerify}(\Pi_\beta^{\text{rep}}, G, C_\beta) = 1$, and aborts otherwise.
-        \item For each $1 \leq \beta \leq \nu$, computes a value $y_{\alpha, \beta} = f_\alpha(\beta)$ and sends it to player $\beta$.
-        \item On receipt of such a value $y_{\beta,\alpha}$ from another player $\beta$, checks that \[ \sum_{j=0}^{t-1} C_{\beta,j} = y_{\beta,\alpha}G \] and aborts otherwise.
+        \item On receipt of such a tuple $(C_\beta, \Pi_\beta^{\text{rep}})$ from another player $\beta$, verifies that $\func{RepVerify}(\Pi_\beta^{\text{rep}}, G, C_{\beta,0}) = 1$, and aborts otherwise.
+        \item For each $1 \leq \beta \leq \nu$, computes a value $y_{\alpha, \beta} = f_\alpha(\beta)$ and sends it to player $\beta$ (using a private and secure side channel).
+        \item On receipt of such a value $y_{\beta,\alpha}$ from another player $\beta$, checks that \[ \sum_{j=0}^{t-1} \alpha^jC_{\beta,j} = y_{\beta,\alpha}G \] and aborts otherwise.
         \item Computes its private key share \[ y_\alpha = \sum_{\beta=1}^{\nu} y_{\beta,\alpha} \] and public key share $Y_\alpha = y_\alpha G$ and public group key \[ Y = \sum_{\beta=1}^{\nu} C_{\beta,0}. \]
         \item Produces a proof of representation $\Pi_\alpha^{\text{key}} = \func{RepProve}(G, Y_\alpha ; y_\alpha)$.
     \end{enumerate}
@@ -358,7 +359,7 @@ The verifier does the following:
     \item Verifies the unique authenticated organizer message on $\mathcal{B}$ containing $pp$, and checks the validity of the parameters.
     \item For each $1 \leq \alpha \leq N_{\text{tally}}$, verifies the unique authenticated tallier message on $\mathcal{B}$ containing $(\alpha, Y_\alpha, \Pi_\alpha^{\text{key}})$ using the corresponding verification key from $L_{\text{tally}}$.
     \item Verifies the tally keys by running $\func{VerifyKeyGen}(\{Y_\alpha, \Pi_\alpha^{\text{key}}\}_{\alpha=1}^{\nu}) \mapsto Y$.
-    \item For each $0 \leq i < N_{\text{voters}}$, verifies the unique authenticated voter message on $\mathcal{B}$ containing $(i, C_i, \Pi_{\text{rep},i})$, and verifies the ballot key by checking that $\func{RepVerify}(\Pi_{\text{rep},i}, \{G, H\}, C_i\} \mapsto 1$.
+    \item For each $0 \leq i < N_{\text{voters}}$, verifies the unique authenticated voter message on $\mathcal{B}$ containing $(i, C_i, \Pi_{\text{rep},i})$, and verifies the ballot key by checking that $\func{RepVerify}(\Pi_{\text{rep},i}, \{G, H\}, C_i) \mapsto 1$.
 \end{enumerate}
 At this point, all participants use $Y$ as the undetermined parameter in $pp_{\text{bit}}$.
 
