@@ -438,11 +438,22 @@ Given a semantically-correct ballot (without explicit voter index $i$) of the fo
 \[ B = \left( (D_j, E_j, \Pi_{\text{enc},j})_{j=0}^{k'-1}, \Pi_{\text{bit}}, C', D', E', \Pi_{\text{set}} \right), \]
 any verifier does the following:
 \begin{enumerate}
+    \item Checks that $B$ does not already appear on $\mathcal{B}$, and aborts otherwise.
     \item Checks that $\func{SerValVerify}(\Pi_{\text{ser}}, F, G, H, Y, C', D', E') \mapsto 1$ using $B$ as a transcript binding, and aborts otherwise.
     \item For each $j \in [0,k')$, checks that $\func{VerifyEncrypt}(Y, j, D_j, E_j, \Pi_{\text{enc},j}) \mapsto 1$, and aborts otherwise.
     \item Checks that \[ \func{BitVerify}\left( \Pi_{\text{bit}}, \sum_{j=0}^{k'-1} E_j \right) \mapsto 1, \] and aborts otherwise.
     \item Assembles the set $\overline{C}$ as in $\func{Vote}$, checks that $\func{SetVerify}(\Pi_{\text{set}}, \overline{C}, C') \mapsto 1$, and aborts otherwise.
 \end{enumerate}
+
+Rejection of duplicate ballots serves an important function.
+Specifically, it avoids the case where a voter submits a revised ballot in the case of coercion, and the adversary then submits the original coerced ballot to be counted instead.
+
+While this also avoids a particular denial-of-service attack where an adversary submits ``spam'' copies of existing ballots to the bulletin board, it does not prevent an adversarial voter from submitting many revised ballots to the bulletin board.
+
+It also does not address the case where ballot ordering on the bulletin board is not well defined at all times.
+For example, in a blockchain-type construction, it may be the case that multiple verified ballots are added to the bulletin board at the same time, such that their ordering is initially undefined.
+This could result in a case where a voter submits a ballot and then immediately revises it; the bulletin board ordering may not match the voter's intent.
+However, this is easily avoided if the time between ballot revisions exceeds the ordering time of the bulletin board.
 
 
 \subsubsection{\texorpdfstring{$\func{Tally}$}{Tally}}
