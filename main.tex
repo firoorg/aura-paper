@@ -373,7 +373,10 @@ Each voter with index $0 \leq i < N_{\text{voters}}$ does the following:
     \item Generates a proof of representation $\func{RepProve}(\{G, H\}, C_i ; \{s, r\}) \mapsto \Pi_{\text{rep},i}$.
     \item Posts $(i, C_i, \Pi_{\text{rep},i})$ to $\mathcal{B}$ as an authenticated message signed with its voter signing key from $L_{\text{voters}}$.
 \end{enumerate}
-We note that it is safe for a voter to reuse their ballot key across multiple elections.
+
+We note that a voter may reuse their ballot key across multiple elections.
+As described later, the value $s_i G$ will be revealed publicly during the tally process; this value will be common to any ballots cast using this key across all such elections.
+However, it is not possible to link $s_i G$ to $C_i$ even under these circumstances.
 
 
 \subsubsection{\texorpdfstring{$\func{VerifySetup}$}{VerifySetup}}
